@@ -1,0 +1,111 @@
+# ========== On Nagios Server (Ubuntu EC2) ==========
+
+# 1. Update system & install dependencies
+sudo apt update
+sudo apt install -y autoconf gcc make unzip libgd-dev libmcrypt-dev libssl-dev bc gawk dc build-essential snmp libnet-snmp-perl gettext
+sudo apt install -y apache2 php libapache2-mod-php php-gd libgd-dev
+
+# 2. Create nagios user and group
+sudo useradd nagios
+sudo usermod -a -G nagios www-data
+
+# 3. Download and install Nagios Core
+cd /tmp
+curl -L -O https://assets.nagios.com/downloads/nagioscore/releases/nagios-4.4.6.tar.gz
+tar -xvf nagios-4.4.6.tar.gz
+cd nagios-4.4.6
+./configure --with-httpd-conf=/etc/apache2/sites-enabled
+make all
+sudo make install
+sudo make install-init
+sudo make install-commandmode
+sudo make install-config
+sudo make install-webconf
+
+# 4. Set password for Nagios web login
+sudo htpasswd -c /usr/local/nagios/etc/htpasswd.users nagiosadmin
+
+# 5. Enable required Apache modules and restart
+sudo a2enmod rewrite cgi
+sudo systemctl restart apache2
+
+# 6. Install Nagios Plugins
+cd /tmp
+curl -L -O https://nagios-plugins.org/download/nagios-plugins-2.3.3.tar.gz
+tar -xvf nagios-plugins-2.3.3.tar.gz
+cd nagios-plugins-2.3.3
+./configure --with-nagios-user=nagios --with-nagios-group=nagios
+make
+sudo make install
+
+# 7. Install NRPE plugin (client checker)
+cd /tmp
+curl -L -O https://github.com/NagiosEnterprises/nrpe/archive/refs/tags/nrpe-4.1.0.tar.gz
+tar -xvf nrpe-4.1.0.tar.gz
+cd nrpe-nrpe-4.1.0
+./configure
+make check_nrpe
+sudo cp src/check_nrpe /usr/local/nagios/libexec/
+
+# 8. Verify NRPE connection (after client setup)
+# Replace <CLIENT_IP> with actual IP
+/usr/local/nagios/libexec/check_nrpe -H <CLIENT_IP>
+
+# ========== On Remote Host (Client EC2: server01) ==========
+
+# 1. Install NRPE and plugins
+sudo apt update
+sudo apt install -y nagios-nrpe-server nagios-plugins
+
+# 2. Allow Nagios server to access NRPE
+sudo nano /etc/nagios/nrpe.cfg
+# Modify this line (use Nagios Server IP)
+# allowed_hosts=127.0.0.1,<NAGIOS_SERVER_IP>
+
+# 3. Restart NRPE service
+sudo systemctl restart nagios-nrpe-server
+sudo systemctl status nagios-nrpe-server
+
+# 4. Verify from Nagios server again
+/usr/local/nagios/libexec/check_nrpe -H <CLIENT_IP>
+
+# ========== On Nagios Server: Define Host & Services ==========
+
+# Create new config file
+sudo nano /usr/local/nagios/etc/servers/server01.cfg
+
+# Add this example config:
+define host {
+    use                     linux-server
+    host_name               server01
+    alias                   Ubuntu Host
+    address                 54.159.156.31
+    max_check_attempts      5
+    check_period            24x7
+    notification_interval   30
+    notification_period     24x7
+}
+
+define service {
+    use                     generic-service
+    host_name               server01
+    service_description     Check Root Disk
+    check_command           check_nrpe!check_disk
+}
+
+define service {
+    use                     generic-service
+    host_name               server01
+    service_description     Check Load
+    check_command           check_nrpe!check_load
+}
+
+# Include 'servers' folder in Nagios config (if not already)
+sudo nano /usr/local/nagios/etc/nagios.cfg
+# Add or ensure this line exists:
+cfg_dir=/usr/local/nagios/etc/servers
+
+# Check config and restart Nagios
+sudo /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
+sudo systemctl restart nagios
+
